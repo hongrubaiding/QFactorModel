@@ -10,7 +10,9 @@ import numpy as np
 from GetAndSaveWindData.MysqlCon import MysqlCon
 from GetAndSaveWindData.GetDataToMysql import GetDataToMysql
 import mylog as mylog
+
 w.start()
+
 
 class GetDataFromWindAndMySql:
     def __init__(self):
@@ -32,7 +34,7 @@ class GetDataFromWindAndMySql:
         :return:
         '''
         sqlStr = "select * from stock_industry_value where stock_code in %s and update_time='%s'" % (
-        tuple(codeList), tradeDate)
+            tuple(codeList), tradeDate)
         resultDf = pd.read_sql(sql=sqlStr, con=self.engine)
         if resultDf.empty:
             self.logger.debug("getBelongIndustry从wind获取！")
@@ -43,7 +45,7 @@ class GetDataFromWindAndMySql:
                 self.logger.error("获取指数成分股数据有误，错误代码" + str(wssData.ErrorCode))
                 return pd.DataFrame()
             df = pd.DataFrame(wssData.Data, index=wssData.Fields, columns=wssData.Codes).T
-            df.rename(columns={"INDUSTRY_CITIC": "industry_name"},inplace=True)
+            df.rename(columns={"INDUSTRY_CITIC": "industry_name"}, inplace=True)
             df['stock_code'] = df.index.tolist()
             df['update_time'] = tradeDate
             df['industry_wind_code'] = ["industry_citic"] * df.shape[0]
@@ -70,29 +72,63 @@ class GetDataFromWindAndMySql:
                     wssData = w.wss(codes=codeList, fields=factors,
                                     options="unit=1;rptDate=%s;rptType=1;currencyType=" % rptDateParam)
             else:
-                wssData = w.wss(codes=codeList, fields=factors, options="rptDate=%s;N=%s" % (rptDateParam, str(backYears)))
+                wssData = w.wss(codes=codeList, fields=factors,
+                                options="rptDate=%s;N=%s" % (rptDateParam, str(backYears)))
 
             if wssData.ErrorCode != 0:
-                self.logger.error("getFactorDailyData获取%s有误，错误代码%s"%(factors,str(wssData.ErrorCode)))
+                self.logger.error("getFactorDailyData获取%s有误，错误代码%s" % (factors, str(wssData.ErrorCode)))
                 return pd.DataFrame()
             df = pd.DataFrame(wssData.Data, columns=wssData.Codes, index=factors).T
 
             resultDf = df.copy()
             df['stock_code'] = df.index.tolist()
             df['update_time'] = rptDate
-            df.rename(columns={factors: "item_value"},inplace=True)
+            df.rename(columns={factors: "item_value"}, inplace=True)
             df['item_wind_code'] = factors[0]
             df['rpt_flag'] = 1
             self.GetDataToMysqlDemo.GetMain(df, 'stock_factor_value')
         else:
-            self.logger.debug("getFactorReportData从本地数据库获取%s！"%factors[0])
+            self.logger.debug("getFactorReportData从本地数据库获取%s！" % factors[0])
             resultDf = resultDf.set_index("stock_code", drop=True).rename(columns={"item_value": factors[0]})
         return resultDf
 
+    def getPetChg(self, codeList, startDate, endDate):
+        '''
+        获取股票区间涨跌幅数据
+        :return:
+        '''
+        sqlStr = "select stock_code,pct_chg_value from stock_range_updown_value where stock_code in %s and start_date='%s' and end_date='%s'" % (
+        tuple(codeList), startDate, endDate)
+        resultDf = pd.read_sql(sql=sqlStr, con=self.engine)
+        if not resultDf.empty:
+            lackCode = [code for code in codeList if code not in resultDf['stock_code'].tolist()]
+        else:
+            lackCode = codeList[:]
+
+        if lackCode:
+            self.logger.debug("getPetChg从wind获取！")
+            startDateParam = startDate[:4] + startDate[5:7] + startDate[8:]
+            endDateParam = endDate[:4] + endDate[5:7] + endDate[8:]
+            wssData = w.wss(codes=lackCode, fields=["pct_chg_per"], options="startDate=%s;endDate=%s"%(startDateParam,endDateParam))
+            if wssData.ErrorCode != 0:
+                self.logger.error("getPetChg获取pct_chg_per有误，错误代码%s" % (str(wssData.ErrorCode)))
+                return pd.DataFrame()
+            df = pd.DataFrame(wssData.Data, index=["pct_chg_value"], columns=wssData.Codes).T
+            df['stock_code'] = df.index.tolist()
+            df['start_date'] = startDate
+            df['end_date'] = endDate
+            self.GetDataToMysqlDemo.GetMain(df, 'stock_range_updown_value')
+            resultDf = pd.concat([resultDf,df],axis=0,sort=True)[['stock_code','pct_chg_value']]
+        else:
+            self.logger.debug("getPetChg从本地数据库获取！")
+        resultDf.set_index('stock_code',inplace=True,drop=True)
+        return resultDf
+
+
     def getFactorDailyData(self, codeList, factors, tradeDate='2018-12-31'):
-        #单个非年报数据的获取
-        sqlStr = "select stock_code,item_value from stock_factor_value where stock_code in %s and update_time='%s' and item_wind_code='%s' "\
-                 % (tuple(codeList),tradeDate,factors[0])
+        # 单个非年报数据的获取
+        sqlStr = "select stock_code,item_value from stock_factor_value where stock_code in %s and update_time='%s' and item_wind_code='%s' " \
+                 % (tuple(codeList), tradeDate, factors[0])
         resultDf = pd.read_sql(sql=sqlStr, con=self.engine)
         if resultDf.empty:
             self.logger.debug("getFactorDailyData从wind获取%s！" % factors[0])
@@ -100,21 +136,22 @@ class GetDataFromWindAndMySql:
             if 'mkt_cap_float' not in factors:
                 wssData = w.wss(codes=codeList, fields=factors, options="tradeDate=%s" % tradeDateParam)
             else:
-                wssData = w.wss(codes=codeList, fields=factors, options="unit=1;tradeDate=%s;currencyType=" % tradeDateParam)
+                wssData = w.wss(codes=codeList, fields=factors,
+                                options="unit=1;tradeDate=%s;currencyType=" % tradeDateParam)
             if wssData.ErrorCode != 0:
-                self.logger.error("getFactorDailyData获取%s有误，错误代码%s" % (factors,str(wssData.ErrorCode)))
+                self.logger.error("getFactorDailyData获取%s有误，错误代码%s" % (factors, str(wssData.ErrorCode)))
                 return pd.DataFrame()
             df = pd.DataFrame(wssData.Data, index=factors, columns=wssData.Codes).T
             resultDf = df.copy()
-            df['stock_code']= df.index.tolist()
+            df['stock_code'] = df.index.tolist()
             df['update_time'] = tradeDate
-            df.rename(columns={factors[0]:"item_value"},inplace=True)
+            df.rename(columns={factors[0]: "item_value"}, inplace=True)
             df['item_wind_code'] = factors[0]
             df['rpt_flag'] = 0
             self.GetDataToMysqlDemo.GetMain(df, 'stock_factor_value')
         else:
             self.logger.debug("getFactorDailyData从本地数据库获取%s！" % factors[0])
-            resultDf = resultDf.set_index("stock_code",drop=True).rename(columns={"item_value":factors[0]})
+            resultDf = resultDf.set_index("stock_code", drop=True).rename(columns={"item_value": factors[0]})
         return resultDf
 
     def getIndexConstituent(self, indexCode='000300.SH', getDate='2019-06-06', indexOrSector='index'):
@@ -262,26 +299,26 @@ class GetDataFromWindAndMySql:
         resultDf.set_index(keys='update_time', inplace=True, drop=True)
         return resultDf
 
-    def checkLackMonthData(self, tempDf,codeList):
+    def checkLackMonthData(self, tempDf, codeList):
         totalCodeList = list(tempDf['stock_code'].unique())
         lackCode = [code for code in codeList if code not in totalCodeList]
         haveCode = list(set(codeList).difference(lackCode))
         for code in haveCode:
-            if tempDf[tempDf['stock_code']==code].shape[0]<2:
+            if tempDf[tempDf['stock_code'] == code].shape[0] < 2:
                 lackCode.append(code)
         return lackCode
 
     def getMonthData(self, codeList=[], startDate='2019-03-01', endDate='2019-05-30'):
-        totalTradeList = [startDate,endDate]
+        totalTradeList = [startDate, endDate]
         sqlstr = "select * from stock_month_value where stock_code in %s and update_time in %s" % (
             tuple(codeList), tuple(totalTradeList))
         tempDf = pd.read_sql(sql=sqlstr, con=self.engine)
-        lackCode = self.checkLackMonthData(tempDf,codeList)
+        lackCode = self.checkLackMonthData(tempDf, codeList)
         if lackCode:
-            self.logger.debug("getMonthData从wind获取,缺失code: %s"%','.join(lackCode))
+            self.logger.debug("getMonthData从wind获取,缺失code: %s" % ','.join(lackCode))
             dfList = []
 
-            for tradeDate in [startDate,endDate]:
+            for tradeDate in [startDate, endDate]:
                 tradeDateStr = tradeDate[:4] + tradeDate[5:7] + tradeDate[8:]
                 wssData = w.wss(codes=lackCode, fields=['close', 'sec_name'],
                                 options="tradeDate=%s;priceAdj=F;cycle=M" % tradeDateStr)
@@ -295,13 +332,14 @@ class GetDataFromWindAndMySql:
                 dfList.append(df)
             tempLackDf = pd.concat(dfList, axis=0, sort=True)
             self.GetDataToMysqlDemo.GetMain(tempLackDf, 'stock_month_value')
-            tempDf = pd.concat([tempDf,tempLackDf],axis=0,sort=True)
-            tempDf = tempDf.drop_duplicates(subset=['stock_code','update_time'])
+            tempDf = pd.concat([tempDf, tempLackDf], axis=0, sort=True)
+            tempDf = tempDf.drop_duplicates(subset=['stock_code', 'update_time'])
         else:
             self.logger.debug("getMonthData从本地数据库获取！")
         return tempDf[['stock_code', 'close_price', 'update_time']]
 
-    def getHQData(self, tempCode, startDate='2019-03-01', endDate='2019-05-30', tableFlag='index',nameList=['close_price']):
+    def getHQData(self, tempCode, startDate='2019-03-01', endDate='2019-05-30', tableFlag='index',
+                  nameList=['close_price']):
         '''
         #获取指数行情数据入口
         '''
@@ -335,6 +373,7 @@ class GetDataFromWindAndMySql:
         df['endDate'] = [endDate] * df.shape[0]
         df['Period'] = [Period] * df.shape[0]
         return df
+
 
 if __name__ == '__main__':
     GetDataFromWindAndMySqlDemo = GetDataFromWindAndMySql()
