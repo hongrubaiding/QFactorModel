@@ -30,6 +30,7 @@ class GetDataToMysql:
         # dataDf.where(dataDf.notnull(), None)
         # dataDf.where(dataDf.notnull(), None)
         cursor = self.conn.cursor()
+
         try:
             for r in range(0, len(dataDf)):
                 values = tuple(dataDf.iloc[r][tableList].tolist())
