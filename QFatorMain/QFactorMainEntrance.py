@@ -8,11 +8,9 @@
 
 import pandas as pd
 import mylog as mylog
-import numpy as np
-from datetime import datetime, timedelta
 from QFactorGetData.ConstructPortfolio import ConstructPortfolio
 from GetAndSaveWindData.GetDataFromWindAndMySql import GetDataFromWindAndMySql
-import os
+from datetime import datetime,timedelta
 
 class QFactorMainEntrance:
     def __init__(self):
@@ -23,7 +21,6 @@ class QFactorMainEntrance:
         self.benchCode = '881001.WI'
         self.GetDataFromWindAndMySqlDemo = GetDataFromWindAndMySql()
         self.ConstructPortfolioDemo = ConstructPortfolio()
-        self.filePath = os.getcwd()+r"\\MiddleResult\\"
         self.middleDataPath = r"C:\\Users\\zouhao\\PycharmProjects\\QFactorModel\\MiddleData\\"
 
     def getMEDeltaPortfolio(self, totalStock, lastAnnualRptDate, tradedate):
@@ -84,48 +81,44 @@ class QFactorMainEntrance:
 
             self.logger.info("获取%s各因子收益率" % tradeDate)
             if (not resultSMBAndHML) or (tradeDate[5:7] == self.tradeDate[:2]):
-                lastAnnualRptDate = str(int(tradeDate[:4]) - 1) + '-12-31'  # 离调仓当日最近的，年报披露日期
-                df = self.GetDataFromWindAndMySqlDemo.getIndexConstituent(indexCode=self.benchCode,
-                                                                          getDate=lastAnnualRptDate,
-                                                                          indexOrSector='sector')
-                totalStock = df['stock_code'].tolist()
+                totalStock = self.getAdjustStockPool(tradeDate)
+                if not totalStock:
+                    break
+
                 resultSMBAndHML = self.getFFSMBAndHMLPortfolio(totalStock=totalStock,tradedate=tradeDate)
                 self.logger.info("%s,6组合构建完成！" % tradeDate)
 
             if not resultSMBAndHML:
                 continue
 
-            # 构建的组合，持有到下一个tradeDate,计算收益率
-            dicFactorReturn = {}
+            resultSMBAndHMLAndWML = {}
             nextTradeDate = totalTradeDate[totalTradeDate.index(tradeDate) + 1]
-            for factorKey, codeList in resultSMBAndHML.items():
-                self.logger.info("计算%s组合市值加权收益率" % factorKey)
-                finalReturnDf = self.GetStockHQData(codeList=codeList, startDate=tradeDate,
-                                                    endDate=nextTradeDate)
-                if finalReturnDf.empty:
-                    self.logger.error("getFamaFactorReturn获取股票行情数据有误，请检查")
-                    return pd.DataFrame()
+            for SMBHMLkey, codeList in resultSMBAndHML.items():
+                tempDic = self.ConstructPortfolioDemo.ConstructWML(codeList=codeList, startDate=tradeDate,endDate=nextTradeDate)
+                if not tempDic:
+                    continue
 
-                marketValueDf = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList,
-                                                                                    factors=["mkt_cap_ard"],
-                                                                                    tradeDate=tradeDate)
-                marketValueDf.rename(columns={"mkt_cap_ard": "stock_value"}, inplace=True)
-                marketValueDf.dropna(inplace=True)
-                try:
-                    usefulMarketDf = marketValueDf.loc[codeList]
-                except:
-                    self.logger.error("getQFactorReturn获取股票总市值为空值，请检查!",codeList)
-                    return pd.DataFrame()
+                for WMLKey, WMLCodeList in tempDic.items():
+                    resultSMBAndHMLAndWML[SMBHMLkey + '-' + WMLKey] = WMLCodeList
+            self.logger.info("%s,18个组合构建完成！" % tradeDate)
 
-                weight =usefulMarketDf / usefulMarketDf.sum()
-                portfolio = (weight['stock_value'] * finalReturnDf[weight.index.tolist()]).sum(axis=1)
-
-                tempResult = {nextTradeDate: portfolio[nextTradeDate]}
-                dicFactorReturn[factorKey] = tempResult
-            factorReturnDf = pd.DataFrame(dicFactorReturn)
+            # 构建的组合，持有到下一个tradeDate,计算收益率
+            # nextTradeDate = totalTradeDate[totalTradeDate.index(tradeDate) + 1]
+            factorReturnDf = self.calcPortfioReturn(resultSMBAndHMLAndWML, tradeDate, nextTradeDate)
             dfList.append(factorReturnDf)
         resultDf = pd.concat(dfList, axis=0, sort=True)
         return resultDf
+
+    def getAdjustStockPool(self,tradeDate):
+        totalStock = []
+        # 初始股票池
+        lastAnnualRptDate = str(int(tradeDate[:4]) - 1) + '-12-31'  # 离调仓当日最近的，年报披露日期
+        df = self.GetDataFromWindAndMySqlDemo.getIndexConstituent(indexCode=self.benchCode,
+                                                                  getDate=lastAnnualRptDate,
+                                                                  indexOrSector='sector')
+        if not df.empty:
+            totalStock = df['stock_code'].tolist()
+        return totalStock
 
     def getQFactorReturn(self, totalTradeDate):
         dfList = []
@@ -136,14 +129,9 @@ class QFactorMainEntrance:
 
             self.logger.info("获取%s各因子收益率" % tradeDate)
             if tradeDate[5:7] == self.tradeDate[:2]:
-                #初始股票池
-                lastAnnualRptDate = str(int(tradeDate[:4]) - 1) + '-12-31'  # 离调仓当日最近的，年报披露日期
-                df = self.GetDataFromWindAndMySqlDemo.getIndexConstituent(indexCode=self.benchCode,
-                                                                          getDate=lastAnnualRptDate,
-                                                                          indexOrSector='sector')
-                if df.empty:
+                totalStock = self.getAdjustStockPool(tradeDate)
+                if not totalStock:
                     break
-                totalStock = df['stock_code'].tolist()
 
                 #过滤掉非银行金融，上市不满两年股票
                 FifterCodeList = self.ExcludeFinancialFirms(codeList=totalStock,tradeDate=tradeDate)
@@ -152,6 +140,7 @@ class QFactorMainEntrance:
                     break
 
                 #按照ME,delta,划分股票池
+                lastAnnualRptDate = str(int(tradeDate[:4]) - 1) + '-12-31'
                 resultSizeDelata = self.getMEDeltaPortfolio(totalStock=FifterCodeList, lastAnnualRptDate=lastAnnualRptDate,
                                                              tradedate=tradeDate)
 
@@ -172,37 +161,73 @@ class QFactorMainEntrance:
                 continue
 
             # 构建的组合，持有到下一个tradeDate,计算收益率
-            dicFactorReturn = {}
             nextTradeDate = totalTradeDate[totalTradeDate.index(tradeDate) + 1]
-            for factorKey, codeList in resultSizeDelataROE.items():
-                self.logger.info("计算%s组合市值加权收益率" % factorKey)
-                finalReturnDf = self.GetStockHQData(codeList=codeList, startDate=tradeDate, endDate=nextTradeDate)
-                if finalReturnDf.empty:
-                    self.logger.error("getQFactorReturn获取股票行情数据有误，请检查")
-                    return pd.DataFrame()
+            factorReturnDf = self.calcPortfioReturn(resultSizeDelataROE, tradeDate, nextTradeDate)
+            dfList.append(factorReturnDf)
+        resultDf = pd.concat(dfList, axis=0, sort=True)
+        return resultDf
 
-                marketValueDf = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList,
-                                                                                    factors=["mkt_cap_ard"],
-                                                                                    tradeDate=tradeDate)
+    def calcPortfioReturn(self,resultDic,tradeDate,nextTradeDate,fifterKey=''):
+        # 构建的组合，持有到下一个tradeDate,计算收益率
+        dicFactorReturn = {}
+        for factorKey, codeList in resultDic.items():
+            if factorKey==fifterKey:
+                continue
 
-                if marketValueDf.empty:
-                    self.logger.error("getQFactorReturn获取股票总市值数据有误，请检查")
-                    return pd.DataFrame()
+            self.logger.info("计算%s组合市值加权收益率" % factorKey)
+            finalReturnDf = self.GetStockHQData(codeList=codeList, startDate=tradeDate, endDate=nextTradeDate)
+            if finalReturnDf.empty:
+                self.logger.error("getQFactorReturn获取股票行情数据有误，请检查")
+                return pd.DataFrame()
 
-                marketValueDf.rename(columns={"mkt_cap_ard": "stock_value"}, inplace=True)
-                marketValueDf.dropna(inplace=True)
-                try:
-                    usefulMarketDf = marketValueDf.loc[codeList]
-                except:
-                    self.logger.error("getQFactorReturn获取股票总市值为空值，请检查!",codeList)
-                    return pd.DataFrame()
+            marketValueDf = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList,
+                                                                                factors=["mkt_cap_ard"],
+                                                                                tradeDate=tradeDate)
 
-                weight =usefulMarketDf / usefulMarketDf.sum()
-                portfolio = (weight['stock_value'] * finalReturnDf[weight.index.tolist()]).sum(axis=1)
+            if marketValueDf.empty:
+                self.logger.error("getWMLFactorReturn获取股票总市值数据有误，请检查")
+                return pd.DataFrame()
 
-                tempResult = {nextTradeDate: portfolio[nextTradeDate]}
-                dicFactorReturn[factorKey] = tempResult
-            factorReturnDf = pd.DataFrame(dicFactorReturn)
+            marketValueDf.rename(columns={"mkt_cap_ard": "stock_value"}, inplace=True)
+            marketValueDf.dropna(inplace=True)
+            try:
+                usefulMarketDf = marketValueDf.loc[codeList]
+            except:
+                self.logger.error("getWMLFactorReturn获取股票总市值为空值，请检查!", codeList)
+                return pd.DataFrame()
+
+            weight = usefulMarketDf / usefulMarketDf.sum()
+            portfolio = (weight['stock_value'] * finalReturnDf[weight.index.tolist()]).sum(axis=1)
+
+            tempResult = {nextTradeDate: portfolio[nextTradeDate]}
+            dicFactorReturn[factorKey] = tempResult
+        factorReturnDf = pd.DataFrame(dicFactorReturn)
+        return factorReturnDf
+
+    def getWMLFactorReturn(self,totalTradeDate):
+        dfList = []
+        totalStock=[]
+        for tradeDate in totalTradeDate:
+            nextLoc = totalTradeDate.index(tradeDate) + 1
+            if nextLoc >= len(totalTradeDate):
+                break
+
+            self.logger.info("获取%s各因子收益率" % tradeDate)
+            if (not totalStock) or (tradeDate[5:7] == self.tradeDate[:2]):
+                totalStock = self.getAdjustStockPool(tradeDate)
+                if not totalStock:
+                    break
+
+            startDate = (datetime.strptime(tradeDate,"%Y-%m-%d")-timedelta(days=30*7)).strftime("%Y-%m-%d")
+            endDate = (datetime.strptime(tradeDate,"%Y-%m-%d")-timedelta(days=30*1)).strftime("%Y-%m-%d")
+
+            WMLDicList = self.ConstructPortfolioDemo.ConstructWML(codeList=totalStock, startDate=startDate,endDate=endDate)
+            if not WMLDicList:
+                continue
+
+            # 构建的组合，持有到下一个tradeDate,计算收益率
+            nextTradeDate = totalTradeDate[totalTradeDate.index(tradeDate) + 1]
+            factorReturnDf = self.calcPortfioReturn(WMLDicList,tradeDate,nextTradeDate,fifterKey='MiddleTrade')
             dfList.append(factorReturnDf)
         resultDf = pd.concat(dfList, axis=0, sort=True)
         return resultDf
@@ -223,54 +248,6 @@ class QFactorMainEntrance:
         finalDf = pd.concat(dffinal, axis=1, sort=True, join='inner')
         finalReturnDf = finalDf / finalDf.shift(1) - 1
         return finalReturnDf
-
-    def CalcFamaMonthReurn(self,portfolioDf=pd.DataFrame()):
-        portfolioDf = pd.read_excel("fama万得全Amkt_cap_float&fa_roe_wgt&2010-2019&总市值加权含金融.xlsx", index_col=0)
-        portfolioNameList = portfolioDf.columns.tolist()
-
-        bigName = [name for name in portfolioNameList if name.find("bigSize") != -1]
-        smallName = [name for name in portfolioNameList if name.find("smallSize") != -1]
-        smallPortfolio = portfolioDf[smallName].mean(axis=1)
-        bigPortfolio = portfolioDf[bigName].mean(axis=1)
-        MEPortfolio = smallPortfolio - bigPortfolio
-        MEPortfolio.name = 'SMB'
-
-        lowPBName = [name for name in portfolioNameList if name.find("lowPB") != -1]
-        highPBName = [name for name in portfolioNameList if name.find("highPB") != -1]
-        lowPBNamePortfolio = portfolioDf[lowPBName].mean(axis=1)
-        highPBNamePortfolio = portfolioDf[highPBName].mean(axis=1)
-        HMLPortfolio = highPBNamePortfolio-lowPBNamePortfolio
-        HMLPortfolio.name = 'HML'
-
-        totalDf = pd.concat([MEPortfolio, HMLPortfolio], axis=1, sort=True)
-        return totalDf
-
-    def CalcQfatorMonthReturn(self, portfolioDf=pd.DataFrame()):
-        portfolioDf = pd.read_excel("万得全A成分mkt_cap_float&fa_roe_wgt&2010-2019&总市值加权不含金融.xlsx", index_col=0)
-        portfolioNameList = portfolioDf.columns.tolist()
-
-        bigName = [name for name in portfolioNameList if name.find("bigSize") != -1]
-        smallName = [name for name in portfolioNameList if name.find("smallSize") != -1]
-        smallPortfolio = portfolioDf[smallName].mean(axis=1)
-        bigPortfolio = portfolioDf[bigName].mean(axis=1)
-        MEPortfolio = smallPortfolio - bigPortfolio
-        MEPortfolio.name = 'ME'
-
-        lowInvestName = [name for name in portfolioNameList if name.find("lowInvest") != -1]
-        highInvestName = [name for name in portfolioNameList if name.find("highInvest") != -1]
-        lowInvestPortfolio = portfolioDf[lowInvestName].mean(axis=1)
-        highInvestPortfolio = portfolioDf[highInvestName].mean(axis=1)
-        deletaPortfolio = lowInvestPortfolio - highInvestPortfolio
-        deletaPortfolio.name = 'deleta'
-
-        highROEName = [name for name in portfolioNameList if name.find("highROE") != -1]
-        lowROEName = [name for name in portfolioNameList if name.find("lowROE") != -1]
-        lowROEPortfolio = portfolioDf[lowROEName].mean(axis=1)
-        highROEPortfolio = portfolioDf[highROEName].mean(axis=1)
-        ROEPortfolio = highROEPortfolio - lowROEPortfolio
-        ROEPortfolio.name = 'ROE'
-        totalDf = pd.concat([MEPortfolio, deletaPortfolio, ROEPortfolio], axis=1, sort=True)
-        return totalDf
 
     def getTradeDay(self,Period='M'):
         startDate = self.startYear +'-' +self.tradeDate
@@ -293,46 +270,30 @@ class QFactorMainEntrance:
         totalIpoDf['IpoDateStr'] = [datestr.strftime("%Y-%m-%d") for datestr in totalIpoDf['ipo_date'].tolist()]
         self.totalIpoDf = totalIpoDf
         totalTradeDate = self.getTradeDay()
+        fileNameDir = self.middleDataPath + r'\\ResultData\\'
 
         famaPortfolioDf = self.getFamaFactorReturn(totalTradeDate)
         if famaPortfolioDf.empty:
             return
-        famaPortfolioDf.to_excel("fama万得全Amkt_cap_float&fa_roe_wgt&%s-%s&总市值加权含金融.xlsx"%(self.startYear,self.endYear))
 
-        portfolioDf = self.getQFactorReturn(totalTradeDate)
-        if portfolioDf.empty:
-            return
-        portfolioDf.to_excel("万得全A成分mkt_cap_float&fa_roe_wgt&%s-%s&总市值加权不含金融.xlsx"%(self.startYear,self.endYear))
-        # self.CalcQfatorMonthRetrn(portfolioDf)
+        famaFileName = fileNameDir+"fama万得全Amkt_cap_float&fa_roe_wgt&%s-%s&总市值加权含金融.xlsx"%(self.startYear,self.endYear)
+        famaPortfolioDf.to_excel(famaFileName)
 
-    def totalFactor(self):
-        QFactorReturn = self.CalcQfatorMonthReturn()
-        famaFactorReturn = self.CalcFamaMonthReurn()
-        totalFactorReturn = pd.concat([QFactorReturn,famaFactorReturn],axis=1,join='inner',sort=True)
+        # portfolioDf = self.getQFactorReturn(totalTradeDate)
+        # if portfolioDf.empty:
+        #     return
+        # qFactorFileName = fileNameDir+"万得全A成分mkt_cap_float&fa_roe_wgt&%s-%s&总市值加权不含金融.xlsx"%(self.startYear,self.endYear)
+        # portfolioDf.to_excel(qFactorFileName)
 
-        benchCode = '000300.SH'
-        totalDate = totalFactorReturn.index.tolist()
-        benchDf = self.GetDataFromWindAndMySqlDemo.getHQData(tempCode=benchCode,startDate=totalDate[0],
-                                                             endDate=totalDate[-1], tableFlag='index')
-        benchDf.rename(columns={"close_price": benchCode}, inplace=True)
-        benchDf = benchDf.loc[totalFactorReturn.index]
-        benchReturn = benchDf / benchDf.shift(1) - 1
-        benchReturn = benchReturn
+        # WMLportfolioDf = self.getWMLFactorReturn(totalTradeDate)
+        # if WMLportfolioDf.empty:
+        #     return
+        # WMLFileName = fileNameDir + "WML万得全A成分mkt_cap_float&fa_roe_wgt&%s-%s&总市值加权不含金融.xlsx" % (
+        # self.startYear, self.endYear)
+        # WMLportfolioDf.to_excel(WMLFileName)
 
-        dateList = benchReturn.index.tolist()
-        riskDf = self.GetDataFromWindAndMySqlDemo.getRiskFree(startDate=dateList[0],endDate=dateList[-1])/12/100
-        updateList = [dateStr.strftime("%Y-%m-%d") for dateStr in riskDf.index.tolist()]
-        riskDf = pd.DataFrame(riskDf.values,index=updateList,columns=['Risk_Free']).fillna(method='pad')
-        riskDf = riskDf.loc[benchReturn.index].fillna(method='pad')
-
-        marketReturn = benchReturn[benchCode]-riskDf['Risk_Free']
-        marketReturn.name = 'MKT'
-
-        totalDf = pd.concat([totalFactorReturn, marketReturn], axis=1, sort=True)
-        corrDf = totalDf.corr()
 
 if __name__ == '__main__':
     QFactorMainEntranceDemo = QFactorMainEntrance()
-    # QFactorMainEntranceDemo.calcMain()
-    QFactorMainEntranceDemo.totalFactor()
+    QFactorMainEntranceDemo.calcMain()
 
