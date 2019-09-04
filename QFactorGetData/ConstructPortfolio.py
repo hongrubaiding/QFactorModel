@@ -2,9 +2,14 @@
 # Author:zouhao
 # email:1084848158@qq.com
 
+'''
+    构建Qfactor中的各类组合
+'''
+
 import pandas as pd
 import mylog as mylog
 import numpy as np
+from datetime import datetime,timedelta
 from GetAndSaveWindData.GetDataFromWindAndMySql import GetDataFromWindAndMySql
 
 
@@ -12,86 +17,88 @@ class ConstructPortfolio:
     def __init__(self):
         self.GetDataFromWindAndMySqlDemo = GetDataFromWindAndMySql()
 
-    def ConstructME(self, codeList, tradedate):
+    def ConstructTotal(self,codeList,tradedate,factor,pastName='',rptFlag=False,divisiond100=False,divideMethod=0):
+        '''
+        基于单个因子的股票池划分
+        :param codeList: 初始股票池
+        :param tradedate: 当前查询因子的日期
+        :param factor: 因子wind代码
+        :param rptFlag: 是否报告期因子
+        :param divisiond100: 取值后是否除以100
+        :param divideMethon: 股票池划分方法标签（0：0.3，0.4，0.3划分，1：0.5，0.5划分）
+        :param pastName:获取数据后的factor重命名
+        :return: 字典对应股票池
+        '''
         result = {}
-        if not codeList:
-            return result
-        df = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList, factors=["mkt_cap_ard"],
-                                                                 tradeDate=tradedate)
-        if df.empty:
-            return result
-        df.rename(columns={"mkt_cap_ard": "Size"}, inplace=True)
-        df.dropna(inplace=True)
-        medianValue = np.percentile(df['Size'], 50)
-        result['smallSize'] = df[df['Size'] < medianValue].index.tolist()
-        result['bigSize'] = df[df['Size'] >= medianValue].index.tolist()
-        return result
+        if not rptFlag:
+            df = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList, factors=[factor],
+                                                                     tradeDate=tradedate)
+        else:
 
-    def ConstructDelataA(self, codeList, rptDate):
-        result = {}
-        df1 = self.GetDataFromWindAndMySqlDemo.getFactorReportData(codeList=codeList, factors=["wgsd_assets"],
-                                                                   rptDate=rptDate)
-        if df1.empty:
-            return result
-
-        rptBackDate = str(int(rptDate[:4]) - 1) + rptDate[4:]
-        df2 = self.GetDataFromWindAndMySqlDemo.getFactorReportData(codeList=codeList, factors=["wgsd_assets"],
-                                                                   rptDate=rptBackDate)
-        if df2.empty:
-            return result
-
-        df = (df1 - df2) / df2
-        df.rename(columns={"wgsd_assets": "DeltaA"}, inplace=True)
-        df.dropna(inplace=True)
-
-        threePer = np.percentile(df['DeltaA'], 30)
-        sevenPer = np.percentile(df['DeltaA'], 70)
-        result['lowInvest'] = df[df['DeltaA'] <= threePer].index.tolist()
-        result['middleInvest'] = df[(sevenPer >= df['DeltaA']) & (df['DeltaA'] > threePer)].index.tolist()
-        result['highInvest'] = df[df['DeltaA'] > sevenPer].index.tolist()
-        return result
-
-    def ConstructROE(self, codeList, rptDate):
-        result = {}
-        df = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList, factors=["fa_roe_wgt"],
-                                                                 tradeDate=rptDate)
-        df.dropna(inplace=True)
-        df.rename(columns={"fa_roe_wgt": "ROE"}, inplace=True)
-        df['ROE'] = df['ROE'] / 100
+            df = self.GetDataFromWindAndMySqlDemo.getFactorReportData(codeList=codeList, factors=[factor],
+                                                                       rptDate=tradedate)
+            if factor == 'wgsd_assets':
+                rptBackDate = str(int(tradedate[:4]) - 1) + tradedate[4:]
+                df2 = self.GetDataFromWindAndMySqlDemo.getFactorReportData(codeList=codeList, factors=[factor],
+                                                                           rptDate=rptBackDate)
+                df = (df - df2) / df2
 
         if df.empty:
             return result
 
-        threePer = np.percentile(df['ROE'], 30)
-        sevenPer = np.percentile(df['ROE'], 70)
-        result['lowROE'] = df[df['ROE'] <= threePer].index.tolist()
-        result['middleROE'] = df[(sevenPer >= df['ROE']) & (df['ROE'] > threePer)].index.tolist()
-        result['highROE'] = df[df['ROE'] > sevenPer].index.tolist()
+        if divisiond100:
+            df = df/100
+
+        if factor=='pb_lf':
+            df = df[df > 0]
+            df[factor] = 1 / df[factor]
+
+        if pastName:
+            df.rename(columns={factor:pastName}, inplace=True)
+        df.dropna(inplace=True)
+
+        if divideMethod==0:
+            medianValue = np.percentile(df[pastName], 50)
+            result['small'+pastName] = df[df[pastName] < medianValue].index.tolist()
+            result['big'+pastName] = df[df[pastName] >= medianValue].index.tolist()
+        else:
+            threePer = np.percentile(df[pastName], 30)
+            sevenPer = np.percentile(df[pastName], 70)
+            result['low'+pastName] = df[df[pastName] <= threePer].index.tolist()
+            result['middle'+pastName] = df[(sevenPer >= df[pastName]) & (df[pastName] > threePer)].index.tolist()
+            result['high'+pastName] = df[df[pastName] > sevenPer].index.tolist()
         return result
 
-    def ConstructHML(self, codeList, tradedate):
+    def ConstructWML(self,codeList,tradeDate):
         result = {}
-        df = self.GetDataFromWindAndMySqlDemo.getFactorDailyData(codeList=codeList, factors=["pb_lf"],
-                                                                 tradeDate=tradedate) / 100
+        startDate = (datetime.strptime(tradeDate, "%Y-%m-%d") - timedelta(days=30 * 2)).strftime("%Y-%m-%d")
+        endDate = (datetime.strptime(tradeDate, "%Y-%m-%d") - timedelta(days=30 * 0)).strftime("%Y-%m-%d")
+        df = self.GetDataFromWindAndMySqlDemo.getPetChg(codeList=codeList,startDate=startDate,endDate=endDate)
+
+        df.dropna(inplace=True)
         if df.empty:
             return result
 
-        df.dropna(inplace=True)
-        df = df[df > 0]
-        df.rename(columns={"pb_lf": "PB"}, inplace=True)
-        df['PB'] = 1 / df['PB']
-        df.dropna(inplace=True)
+        df.rename(columns={"pct_chg_value": "WML"}, inplace=True)
+        df['WML'] = df['WML'] / 100
 
-        threePer = np.percentile(df['PB'], 30)
-        sevenPer = np.percentile(df['PB'], 70)
-        result['lowPB'] = df[df['PB'] <= threePer].index.tolist()
-        result['middlePB'] = df[(sevenPer >= df['PB']) & (df['PB'] > threePer)].index.tolist()
-        result['highPB'] = df[df['PB'] > sevenPer].index.tolist()
+        threePer = np.percentile(df['WML'], 30)
+        sevenPer = np.percentile(df['WML'], 70)
+        result['Winner'] = df[df['WML'] <= threePer].index.tolist()
+        result['MiddleTrade'] = df[(sevenPer >= df['WML']) & (df['WML'] > threePer)].index.tolist()
+        result['Loser'] = df[df['WML'] > sevenPer].index.tolist()
         return result
 
-    def ConstructWML(self):
-        pass
-
+    def ConstructAdjustStockPool(self, benchCode,tradeDate):
+        totalStock = []
+        # 初始股票池
+        lastAnnualRptDate = str(int(tradeDate[:4]) - 1) + '-12-31'  # 离调仓当日最近的，年报披露日期
+        df = self.GetDataFromWindAndMySqlDemo.getIndexConstituent(indexCode=benchCode,
+                                                                  getDate=lastAnnualRptDate,
+                                                                  indexOrSector='sector')
+        if not df.empty:
+            totalStock = df['stock_code'].tolist()
+        return totalStock
 
 if __name__ == "__main__":
     ConstructPortfolioDemo = ConstructPortfolio()
